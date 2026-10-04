@@ -1,0 +1,932 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useMockData } from '../store/MockDataContext';
+import { useNavigate } from 'react-router-dom';
+import { ArrowLeft, Edit3, Save, Activity, Utensils, Pill, Brain, HeartPulse, Moon, User as UserIcon, RefreshCw, Key, Loader2, Plus, Trash2, FileText, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { profileApi, healthApi, api, type Fact, followApi } from '../services/api';
+import type { MemoryCard, MemoryCardType } from '../store/MockDataContext';
+
+interface Medication {
+  name: string;
+  dosage: string;
+  timing: string;
+}
+
+function categoryToType(category: string): MemoryCardType {
+  switch (category) {
+    case '飲食': return 'diet';
+    case '用藥': return 'medication';
+    case '活動': return 'activity';
+    case '睡眠': return 'sleep';
+    case '身體': return 'body';
+    case '情緒': return 'mood';
+    case '其他': return 'other';
+    default: return 'other';
+  }
+}
+
+function categoryToTitle(category: string): string {
+  switch (category) {
+    case '飲食': return '飲食記憶卡';
+    case '用藥': return '用藥記憶卡';
+    case '活動': return '活動記憶卡';
+    case '睡眠': return '睡眠記憶卡';
+    case '身體': return '身體記憶卡';
+    case '情緒': return '情緒記憶卡';
+    case '其他': return '其他記憶卡';
+    default: return '生活記憶卡';
+  }
+}
+
+function factToMemoryCard(fact: Fact): MemoryCard {
+  return {
+    id: fact.fact_id,
+    type: categoryToType(fact.category),
+    title: categoryToTitle(fact.category),
+    content: fact.content,
+    date: fact.updated_at ? fact.updated_at.split('T')[0] : '',
+  };
+}
+
+const CHRONIC_OPTIONS = ['高血壓', '糖尿病', '心臟病', '骨質疏鬆', '關節炎', '失智症', '中風', '腎臟病'];
+const GENDER_OPTIONS = ['男性', '女性', '不透露'];
+
+function parseCustomConditions(value: string): string[] {
+  return Array.from(new Set(
+    value
+      .split(/[、,，;；\n]+/)
+      .map(item => item.trim())
+      .filter(Boolean),
+  ));
+}
+
+/** 追蹤請求核准子組件 */
+const PendingFollowRequests: React.FC = () => {
+  const [requests, setRequests] = useState<any[]>([]);
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadRequests();
+    const interval = setInterval(loadRequests, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const loadRequests = async () => {
+    try {
+      const data = await followApi.getPendingRequests();
+      setRequests(data);
+    } catch {}
+  };
+
+  const handleApprove = async (followId: string) => {
+    setLoadingId(followId);
+    try {
+      await followApi.approve(followId);
+      setRequests(prev => prev.filter(r => r.follow_id !== followId));
+    } catch (err) { console.error(err); }
+    finally { setLoadingId(null); }
+  };
+
+  const handleReject = async (followId: string) => {
+    setLoadingId(followId);
+    try {
+      await followApi.reject(followId);
+      setRequests(prev => prev.filter(r => r.follow_id !== followId));
+    } catch (err) { console.error(err); }
+    finally { setLoadingId(null); }
+  };
+
+  if (requests.length === 0) return null;
+
+  return (
+    <motion.section initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}
+      className="bg-white rounded-3xl p-8 shadow-sm border border-orange-100">
+      <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-3 mb-4">
+        <UserIcon className="w-7 h-7 text-orange-500" /> 追蹤請求
+      </h2>
+      <p className="text-slate-500 mb-4">以下家人想追蹤您的健康狀況，請確認是否允許。</p>
+      <div className="space-y-3">
+        {requests.map(req => (
+          <div key={req.follow_id} className="flex items-center justify-between p-4 bg-orange-50 rounded-xl border border-orange-200">
+            <div>
+              <p className="font-bold text-slate-800">{req.display_name || '未知'}</p>
+              <p className="text-sm text-slate-500">@{req.account_handle || '—'}</p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => handleApprove(req.follow_id)} disabled={loadingId === req.follow_id}
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 text-white rounded-lg font-bold text-sm">
+                核准
+              </button>
+              <button onClick={() => handleReject(req.follow_id)} disabled={loadingId === req.follow_id}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 disabled:bg-slate-100 text-slate-600 rounded-lg font-bold text-sm">
+                拒絕
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </motion.section>
+  );
+};
+
+/** 我的追蹤者管理子組件 */
+const MyFollowers: React.FC = () => {
+  const [followers, setFollowers] = useState<any[]>([]);
+  const [removeLoadingId, setRemoveLoadingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadFollowers();
+    const interval = setInterval(loadFollowers, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const loadFollowers = async () => {
+    try {
+      const data = await followApi.getMyFollowers();
+      setFollowers(data);
+    } catch {}
+  };
+
+  const handleRemove = async (followId: string) => {
+    if (!confirm('確定要移除此追蹤者嗎？對方將無法再查看您的健康狀況。')) return;
+    setRemoveLoadingId(followId);
+    try {
+      await followApi.remove(followId);
+      setFollowers(prev => prev.filter(f => f.follow_id !== followId));
+    } catch (err) { console.error(err); }
+    finally { setRemoveLoadingId(null); }
+  };
+
+  if (followers.length === 0) return null;
+
+  return (
+    <motion.section initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.07 }}
+      className="bg-white rounded-3xl p-8 shadow-sm border border-teal-100">
+      <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-3 mb-4">
+        <UserIcon className="w-7 h-7 text-teal-500" /> 我的追蹤者
+      </h2>
+      <p className="text-slate-500 mb-4">以下家人正在追蹤您的健康狀況。</p>
+      <div className="space-y-3">
+        {followers.map(f => (
+          <div key={f.follow_id} className="flex items-center justify-between p-4 bg-teal-50 rounded-xl border border-teal-200">
+            <div>
+              <p className="font-bold text-slate-800">{f.display_name || '未知'}</p>
+              <p className="text-sm text-slate-500">@{f.account_handle || '—'}</p>
+            </div>
+            <button onClick={() => handleRemove(f.follow_id)} disabled={removeLoadingId === f.follow_id}
+              className="flex items-center gap-1 px-4 py-2 bg-red-50 hover:bg-red-100 disabled:bg-red-50/50 text-red-500 hover:text-red-600 rounded-lg font-bold text-sm border border-red-200 transition-colors">
+              <Trash2 className="w-4 h-4" /> 移除
+            </button>
+          </div>
+        ))}
+      </div>
+    </motion.section>
+  );
+};
+
+/** 記憶足跡時間軸子組件 */
+interface MemoryTimelineProps {
+  memoryCards: MemoryCard[];
+  loading: boolean;
+  personalNotes: string;
+  setPersonalNotes: (v: string) => void;
+  editingNotes: boolean;
+  setEditingNotes: (v: boolean) => void;
+  savingNotes: boolean;
+  handleSaveNotes: () => void;
+  getIconForType: (type: MemoryCardType) => React.ReactNode;
+  getBgForType: (type: MemoryCardType) => string;
+}
+
+interface DayNode {
+  date: string; // YYYY-MM-DD
+  label: string; // MM/DD
+  weekday: string;
+  events: MemoryCard[];
+}
+
+function groupByDate(cards: MemoryCard[]): DayNode[] {
+  const map = new Map<string, MemoryCard[]>();
+  for (const card of cards) {
+    const date = card.date || '未知日期';
+    if (!map.has(date)) map.set(date, []);
+    map.get(date)!.push(card);
+  }
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+  const nodes: DayNode[] = [];
+  for (const [date, events] of map.entries()) {
+    const d = new Date(date);
+    const label = isNaN(d.getTime()) ? date : `${d.getMonth() + 1}/${d.getDate()}`;
+    const weekday = isNaN(d.getTime()) ? '' : `週${weekdays[d.getDay()]}`;
+    nodes.push({ date, label, weekday, events });
+  }
+  // 按日期倒序（最新在左）
+  nodes.sort((a, b) => b.date.localeCompare(a.date));
+  return nodes;
+}
+
+function getCategoryLabel(type: MemoryCardType): string {
+  switch (type) {
+    case 'diet': return '飲食';
+    case 'medication': return '用藥';
+    case 'activity': return '活動';
+    case 'sleep': return '睡眠';
+    case 'body': return '身體';
+    case 'mood': return '情緒';
+    case 'other': return '其他';
+  }
+}
+
+const MemoryTimeline: React.FC<MemoryTimelineProps> = ({
+  memoryCards, loading, personalNotes, setPersonalNotes,
+  editingNotes, setEditingNotes, savingNotes, handleSaveNotes,
+  getIconForType, getBgForType,
+}) => {
+  const dayNodes = groupByDate(memoryCards);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [startX, setStartX] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+
+  // 拖拽時間軸
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    setIsDragging(true);
+    setStartX(e.pageX - (timelineRef.current?.offsetLeft || 0));
+    setScrollLeft(timelineRef.current?.scrollLeft || 0);
+  }, []);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDragging) return;
+    e.preventDefault();
+    const x = e.pageX - (timelineRef.current?.offsetLeft || 0);
+    const walk = (x - startX) * 1.5;
+    if (timelineRef.current) timelineRef.current.scrollLeft = scrollLeft - walk;
+  }, [isDragging, startX, scrollLeft]);
+
+  const handleMouseUp = useCallback(() => { setIsDragging(false); }, []);
+
+  // Touch 支援
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+    setIsDragging(true);
+    setStartX(e.touches[0].pageX - (timelineRef.current?.offsetLeft || 0));
+    setScrollLeft(timelineRef.current?.scrollLeft || 0);
+  }, []);
+
+  const handleTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!isDragging) return;
+    const x = e.touches[0].pageX - (timelineRef.current?.offsetLeft || 0);
+    const walk = (x - startX) * 1.5;
+    if (timelineRef.current) timelineRef.current.scrollLeft = scrollLeft - walk;
+  }, [isDragging, startX, scrollLeft]);
+
+  const scrollTimeline = (direction: 'left' | 'right') => {
+    if (!timelineRef.current) return;
+    const scrollAmount = 200;
+    timelineRef.current.scrollBy({ left: direction === 'left' ? -scrollAmount : scrollAmount, behavior: 'smooth' });
+  };
+
+  const selectedDay = dayNodes[selectedIndex] || null;
+
+  return (
+    <motion.section initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+      className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
+          <Clock className="w-7 h-7 text-emerald-500" /> 記憶足跡
+        </h2>
+        <p className="text-slate-500 mt-2">您與小安互動留下的記憶點滴，按日期排列。</p>
+      </div>
+
+      {/* 個人備註區 */}
+      <div className="mb-6">
+        {personalNotes.trim() && !editingNotes ? (
+          <div className="p-4 rounded-2xl border border-sky-200 bg-sky-50/60 cursor-pointer hover:bg-sky-50 transition-colors"
+            onClick={() => setEditingNotes(true)}>
+            <div className="flex items-center gap-2 mb-2">
+              <FileText className="w-5 h-5 text-sky-500" />
+              <span className="font-bold text-slate-700">我的備註</span>
+              <span className="text-xs bg-sky-100 text-sky-600 px-2 py-0.5 rounded-full">手動填寫・小安會參考</span>
+            </div>
+            <p className="text-base text-slate-700 leading-relaxed whitespace-pre-wrap">{personalNotes}</p>
+          </div>
+        ) : (editingNotes || !personalNotes.trim()) ? (
+          <div className="p-4 rounded-2xl border-2 border-dashed border-sky-300 bg-sky-50/50">
+            <div className="flex items-center gap-2 mb-3">
+              <FileText className="w-5 h-5 text-sky-500" />
+              <span className="font-bold text-slate-700">我的備註</span>
+              <span className="text-xs bg-sky-100 text-sky-600 px-2 py-0.5 rounded-full">手動填寫・小安會參考</span>
+            </div>
+            <textarea value={personalNotes} onChange={e => setPersonalNotes(e.target.value)} rows={3}
+              placeholder="寫下想讓小安知道的事，例如：我對海鮮過敏、每週三要去復健..."
+              className="w-full border border-sky-300 rounded-xl px-3 py-2 text-base focus:outline-none focus:border-sky-500 resize-none" />
+            <div className="flex justify-end gap-2 mt-2">
+              {editingNotes && <button onClick={() => setEditingNotes(false)} className="px-3 py-1.5 text-sm text-slate-500 hover:text-slate-700">取消</button>}
+              <button onClick={handleSaveNotes} disabled={savingNotes}
+                className="px-4 py-1.5 bg-sky-500 hover:bg-sky-600 disabled:bg-sky-300 text-white text-sm rounded-lg font-bold flex items-center gap-1">
+                <Save className="w-4 h-4" />{savingNotes ? '儲存中...' : '儲存'}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+          <span className="ml-3 text-slate-500">載入中...</span>
+        </div>
+      ) : dayNodes.length === 0 ? (
+        <div className="py-12 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
+          <Brain className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+          <p className="text-slate-500 font-medium">目前還沒有記憶點滴，多跟小安聊天就會產生喔！</p>
+        </div>
+      ) : (
+        <>
+          {/* ===== 橫向時間軸 ===== */}
+          <div className="relative mb-6">
+            {/* 左箭頭 */}
+            <button onClick={() => scrollTimeline('left')}
+              className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 bg-white/90 border border-slate-200 rounded-full flex items-center justify-center shadow-sm hover:bg-emerald-50 hover:border-emerald-300 transition-colors">
+              <ChevronLeft className="w-4 h-4 text-slate-600" />
+            </button>
+            {/* 右箭頭 */}
+            <button onClick={() => scrollTimeline('right')}
+              className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 bg-white/90 border border-slate-200 rounded-full flex items-center justify-center shadow-sm hover:bg-emerald-50 hover:border-emerald-300 transition-colors">
+              <ChevronRight className="w-4 h-4 text-slate-600" />
+            </button>
+
+            {/* 時間軸本體 */}
+            <div
+              ref={timelineRef}
+              className="overflow-x-auto scrollbar-hide mx-10 cursor-grab active:cursor-grabbing select-none"
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleMouseUp}
+            >
+              <div className="flex items-center min-w-max py-4 px-2">
+                {/* 水平連接線 */}
+                <div className="absolute top-1/2 left-12 right-12 h-0.5 bg-gradient-to-r from-emerald-200 via-emerald-300 to-emerald-200 -translate-y-1/2 pointer-events-none" />
+
+                {dayNodes.map((node, idx) => (
+                  <div key={node.date} className="flex flex-col items-center mx-3 relative" style={{ minWidth: '80px' }}>
+                    {/* 節點 */}
+                    <button
+                      onClick={() => setSelectedIndex(idx)}
+                      className={`relative z-10 w-14 h-14 rounded-full flex flex-col items-center justify-center transition-all duration-200 border-2 ${
+                        idx === selectedIndex
+                          ? 'bg-emerald-500 border-emerald-600 text-white shadow-lg shadow-emerald-200 scale-110'
+                          : 'bg-white border-slate-200 text-slate-600 hover:border-emerald-300 hover:bg-emerald-50'
+                      }`}
+                    >
+                      <span className="text-xs font-bold leading-tight">{node.label}</span>
+                      <span className="text-[10px] leading-tight opacity-80">{node.weekday}</span>
+                    </button>
+                    {/* 事件數量指示器 */}
+                    <span className={`mt-1.5 text-xs font-semibold px-2 py-0.5 rounded-full ${
+                      idx === selectedIndex ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'
+                    }`}>
+                      {node.events.length} 則
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ===== 選中日期的記憶點滴列表 ===== */}
+          <AnimatePresence mode="wait">
+            {selectedDay && (
+              <motion.div
+                key={selectedDay.date}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+              >
+                <div className="flex items-center gap-3 mb-4 pb-3 border-b border-slate-100">
+                  <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                  <h3 className="text-lg font-bold text-slate-800">{selectedDay.date}</h3>
+                  <span className="text-sm text-slate-500">{selectedDay.weekday}</span>
+                  <span className="ml-auto text-sm text-slate-400">共 {selectedDay.events.length} 則記憶點滴</span>
+                </div>
+
+                <div className="max-h-[420px] overflow-y-auto space-y-3 pr-1 scrollbar-thin">
+                  {selectedDay.events.map((card, eventIdx) => (
+                    <motion.div
+                      key={card.id}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: eventIdx * 0.05 }}
+                      className={`flex items-start gap-4 p-4 rounded-xl border ${getBgForType(card.type)} transition-all hover:shadow-sm`}
+                    >
+                      {/* 左側圖標 */}
+                      <div className="p-2 bg-white/70 rounded-lg shadow-sm flex-shrink-0">
+                        {getIconForType(card.type)}
+                      </div>
+                      {/* 內容 */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-xs font-semibold px-2 py-0.5 bg-white/60 rounded-full text-slate-600">
+                            {getCategoryLabel(card.type)}
+                          </span>
+                        </div>
+                        <p className="text-base text-slate-700 leading-relaxed">{card.content}</p>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+
+                {selectedDay.events.length > 5 && (
+                  <p className="text-center text-sm text-slate-400 mt-3 pt-2 border-t border-slate-100">
+                    ↑ 向上滑動查看更多記憶點滴
+                  </p>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </>
+      )}
+    </motion.section>
+  );
+};
+
+const ElderProfilePage: React.FC = () => {
+  const { user } = useMockData();
+  const navigate = useNavigate();
+
+  // 基本資料
+  const [isEditing, setIsEditing] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [displayName, setDisplayName] = useState(user?.name ?? '');
+  const [accountHandle, setAccountHandle] = useState(user?.username ?? '');
+  const [birth, setBirth] = useState('');
+  const [height, setHeight] = useState('');
+  const [weight, setWeight] = useState('');
+  const [genderChoice, setGenderChoice] = useState('');
+  const [customGender, setCustomGender] = useState('');
+
+  // 健康資料
+  const [chronicConditions, setChronicConditions] = useState<string[]>([]);
+  const [customChronicEnabled, setCustomChronicEnabled] = useState(false);
+  const [customChronicText, setCustomChronicText] = useState('');
+  const [medications, setMedications] = useState<Medication[]>([]);
+  const [allergies, setAllergies] = useState('');
+
+  // 綁定碼
+  const [bindingCode, setBindingCode] = useState('------');
+  const [savingCode, setSavingCode] = useState(false);
+  const [customCode, setCustomCode] = useState('');
+  const [showCustomCodeInput, setShowCustomCodeInput] = useState(false);
+
+  // 個人備註（顯示在記憶卡區）
+  const [personalNotes, setPersonalNotes] = useState('');
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [savingNotes, setSavingNotes] = useState(false);
+
+  // 記憶卡片
+  const [memoryCards, setMemoryCards] = useState<MemoryCard[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (user) loadFromApi();
+  }, [user]);
+
+  const loadFromApi = async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const pData = await profileApi.get();
+      setDisplayName(pData.display_name || user.name);
+      setAccountHandle(pData.account_handle || user.username);
+      setBirth(pData.birth || '');
+      setHeight(pData.height || '');
+      setWeight(pData.weight || '');
+      setPersonalNotes(pData.personal_notes || '');
+
+      const loadedGender = (pData.gender || '').trim();
+      if (!loadedGender) {
+        setGenderChoice('');
+        setCustomGender('');
+      } else if (GENDER_OPTIONS.includes(loadedGender)) {
+        setGenderChoice(loadedGender);
+        setCustomGender('');
+      } else {
+        setGenderChoice('自訂');
+        setCustomGender(loadedGender);
+      }
+
+      if (pData.binding_code) {
+        setBindingCode(pData.binding_code);
+      } else {
+        const codeData = await api.get<{ binding_code: string }>('/api/profile/binding-code');
+        setBindingCode(codeData.binding_code);
+      }
+
+      // 解析健康資料，並將固定疾病與自訂疾病分開呈現。
+      try {
+        const parsedConditions = JSON.parse(pData.chronic_conditions || '[]');
+        if (!Array.isArray(parsedConditions)) throw new Error('慢性病資料不是陣列');
+        const conditions = parsedConditions
+          .filter((condition): condition is string => typeof condition === 'string')
+          .map(condition => condition.trim())
+          .filter(Boolean);
+        const fixedConditions = conditions.filter(condition => CHRONIC_OPTIONS.includes(condition));
+        const customConditions = conditions.filter(
+          condition => condition !== '其他' && !CHRONIC_OPTIONS.includes(condition),
+        );
+        setChronicConditions(Array.from(new Set(fixedConditions)));
+        setCustomChronicEnabled(customConditions.length > 0 || conditions.includes('其他'));
+        setCustomChronicText(Array.from(new Set(customConditions)).join('、'));
+      } catch (err) {
+        console.warn('Invalid chronic conditions:', err);
+        setChronicConditions([]);
+        setCustomChronicEnabled(false);
+        setCustomChronicText('');
+        setProfileError('慢性病資料格式異常，請重新選擇後儲存。');
+      }
+      try {
+        const meds = JSON.parse(pData.current_medications || '[]');
+        if (Array.isArray(meds)) setMedications(meds);
+      } catch {}
+      if ((pData as any).allergies) {
+        try {
+          const al = JSON.parse((pData as any).allergies);
+          setAllergies(Array.isArray(al) ? al.join('、') : (pData as any).allergies);
+        } catch { setAllergies((pData as any).allergies); }
+      }
+      // 載入記憶卡片
+      const overview = await healthApi.getOverview(pData.account_id);
+      const allFacts = [
+        ...(overview.medication_facts || []),
+        ...(overview.body_facts || []),
+        ...(overview.diet_facts || []),
+        ...(overview.mood_facts || []),
+        ...(overview.other_facts || []),
+      ];
+      if (allFacts.length > 0) setMemoryCards(allFacts.map(factToMemoryCard));
+    } catch (err) {
+      console.warn('API unavailable:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSave = async () => {
+    setProfileError('');
+
+    const customConditions = customChronicEnabled
+      ? parseCustomConditions(customChronicText)
+      : [];
+    if (customChronicEnabled && customConditions.length === 0) {
+      setProfileError('請填寫「其他／自訂」慢性病名稱，或取消該選項。');
+      return;
+    }
+    if (customConditions.some(condition => condition.length > 100)) {
+      setProfileError('每個慢性病名稱不可超過 100 個字。');
+      return;
+    }
+
+    let gender: string | null = genderChoice || null;
+    if (genderChoice === '自訂') {
+      gender = customGender.trim();
+      if (!gender) {
+        setProfileError('請填寫自訂性別，或改選其他選項。');
+        return;
+      }
+    }
+
+    const allConditions = Array.from(new Set([...chronicConditions, ...customConditions]));
+    if (allConditions.length > 20) {
+      setProfileError('慢性病最多可填寫 20 項。');
+      return;
+    }
+
+    setSavingProfile(true);
+    try {
+      await profileApi.update({
+        display_name: displayName.trim(),
+        birth,
+        height,
+        weight,
+        gender,
+        chronic_conditions: JSON.stringify(allConditions),
+        current_medications: JSON.stringify(medications),
+        allergies: JSON.stringify(
+          allergies.split(/[、,，]+/).map(item => item.trim()).filter(Boolean),
+        ),
+      });
+      setCustomChronicText(customConditions.join('、'));
+      setIsEditing(false);
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : '個人資料儲存失敗，請稍後再試。');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const handleRegenerateCode = async () => {
+    setSavingCode(true);
+    try {
+      const data = await api.put<any>('/api/profile/binding-code', {});
+      setBindingCode(data.binding_code || bindingCode);
+    } catch (err) { console.error(err); }
+    finally { setSavingCode(false); }
+  };
+
+  const handleSetCustomCode = async () => {
+    if (customCode.length !== 6 || !/^\d{6}$/.test(customCode)) { alert('綁定碼必須為 6 位數字'); return; }
+    setSavingCode(true);
+    try {
+      const data = await api.put<any>('/api/profile/binding-code', { code: customCode });
+      setBindingCode(data.binding_code || customCode);
+      setShowCustomCodeInput(false); setCustomCode('');
+    } catch (err: any) { alert(err.message || '設定失敗'); }
+    finally { setSavingCode(false); }
+  };
+
+  const handleSaveNotes = async () => {
+    setSavingNotes(true);
+    try { await api.put('/api/profile/notes', { personal_notes: personalNotes }); }
+    catch (err) { console.error(err); }
+    finally { setSavingNotes(false); setEditingNotes(false); }
+  };
+
+  const toggleChronic = (condition: string) => {
+    setChronicConditions(prev => (
+      prev.includes(condition)
+        ? prev.filter(item => item !== condition)
+        : [...prev, condition]
+    ));
+  };
+  const toggleCustomChronic = () => {
+    if (customChronicEnabled) setCustomChronicText('');
+    setCustomChronicEnabled(!customChronicEnabled);
+    setProfileError('');
+  };
+  const displayedCustomConditions = parseCustomConditions(customChronicText);
+  const displayedConditions = Array.from(new Set([
+    ...chronicConditions,
+    ...displayedCustomConditions,
+    ...(customChronicEnabled && displayedCustomConditions.length === 0 ? ['其他'] : []),
+  ]));
+  const displayedGender = genderChoice === '自訂' ? customGender.trim() : genderChoice;
+
+  const addMedication = () => setMedications(prev => [...prev, { name: '', dosage: '', timing: '' }]);
+  const updateMedication = (i: number, field: keyof Medication, value: string) => {
+    setMedications(prev => { const m = [...prev]; m[i] = { ...m[i], [field]: value }; return m; });
+  };
+  const removeMedication = (i: number) => setMedications(prev => prev.filter((_, idx) => idx !== i));
+
+  const getIconForType = (type: MemoryCardType) => {
+    switch (type) {
+      case 'diet': return <Utensils className="w-6 h-6 text-amber-500" />;
+      case 'medication': return <Pill className="w-6 h-6 text-rose-500" />;
+      case 'activity': return <Activity className="w-6 h-6 text-emerald-500" />;
+      case 'sleep': return <Moon className="w-6 h-6 text-sky-500" />;
+      case 'body': return <HeartPulse className="w-6 h-6 text-teal-500" />;
+      case 'mood': return <Brain className="w-6 h-6 text-indigo-500" />;
+      case 'other': return <FileText className="w-6 h-6 text-slate-500" />;
+    }
+  };
+  const getBgForType = (type: MemoryCardType) => {
+    switch (type) {
+      case 'diet': return 'bg-amber-50 border-amber-200';
+      case 'medication': return 'bg-rose-50 border-rose-200';
+      case 'activity': return 'bg-emerald-50 border-emerald-200';
+      case 'sleep': return 'bg-sky-50 border-sky-200';
+      case 'body': return 'bg-teal-50 border-teal-200';
+      case 'mood': return 'bg-indigo-50 border-indigo-200';
+      case 'other': return 'bg-slate-50 border-slate-200';
+    }
+  };
+
+  if (!user) return null;
+
+  return (
+    <div className="min-h-screen bg-slate-50/50 pb-20">
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-20 shadow-sm">
+        <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+          <button onClick={() => navigate('/')} className="flex items-center gap-2 text-slate-600 hover:text-emerald-600 font-semibold transition-colors">
+            <ArrowLeft className="w-6 h-6" /> 回到聊天
+          </button>
+          <h1 className="text-2xl font-bold text-slate-800">個人資料設定</h1>
+          <div className="w-24"></div>
+        </div>
+      </header>
+
+      <main className="max-w-4xl mx-auto px-4 py-8 space-y-8">
+
+        {/* ===== 基本資料 ===== */}
+        <motion.section initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-3xl p-8 shadow-sm border border-slate-100">
+          <div className="flex items-center justify-between mb-8 pb-4 border-b border-slate-100">
+            <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-3">
+              <UserIcon className="w-7 h-7 text-emerald-500" /> 基本資料
+            </h2>
+            {isEditing ? (
+              <button onClick={handleSave} disabled={savingProfile} className="flex items-center gap-2 px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-bold transition-all shadow-md disabled:opacity-60 disabled:cursor-not-allowed">
+                {savingProfile ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}
+                {savingProfile ? '儲存中…' : '儲存修改'}
+              </button>
+            ) : (
+              <button onClick={() => { setProfileError(''); setIsEditing(true); }} className="flex items-center gap-2 px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition-all">
+                <Edit3 className="w-5 h-5" /> 編輯資料
+              </button>
+            )}
+          </div>
+
+          {profileError && (
+            <div role="alert" className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-base text-red-700">
+              {profileError}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xl">
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider">帳號代碼 (不可更改)</label>
+              <input type="text" value={accountHandle} disabled className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-slate-500" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider">顯示名稱</label>
+              <input type="text" value={displayName} onChange={e => setDisplayName(e.target.value)} disabled={!isEditing} className={`w-full border rounded-xl px-4 py-3 text-slate-800 transition-all ${isEditing ? 'border-emerald-400 bg-white focus:ring-4 focus:ring-emerald-100 outline-none' : 'border-slate-200 bg-slate-50'}`} />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider">出生年月日</label>
+              <input type="date" value={birth} onChange={e => setBirth(e.target.value)} disabled={!isEditing} className={`w-full border rounded-xl px-4 py-3 text-slate-800 transition-all ${isEditing ? 'border-emerald-400 bg-white focus:ring-4 focus:ring-emerald-100 outline-none' : 'border-slate-200 bg-slate-50'}`} />
+            </div>
+            <div className="flex gap-4">
+              <div className="space-y-2 flex-1">
+                <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider">身高 (cm)</label>
+                <input type="number" value={height} onChange={e => setHeight(e.target.value)} disabled={!isEditing} className={`w-full border rounded-xl px-4 py-3 text-slate-800 transition-all ${isEditing ? 'border-emerald-400 bg-white focus:ring-4 focus:ring-emerald-100 outline-none' : 'border-slate-200 bg-slate-50'}`} />
+              </div>
+              <div className="space-y-2 flex-1">
+                <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider">體重 (kg)</label>
+                <input type="number" value={weight} onChange={e => setWeight(e.target.value)} disabled={!isEditing} className={`w-full border rounded-xl px-4 py-3 text-slate-800 transition-all ${isEditing ? 'border-emerald-400 bg-white focus:ring-4 focus:ring-emerald-100 outline-none' : 'border-slate-200 bg-slate-50'}`} />
+              </div>
+            </div>
+
+            {/* 性別 */}
+            <div className="space-y-3 col-span-1 md:col-span-2 mt-4 pt-4 border-t border-slate-100">
+              <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider">性別</label>
+              {isEditing ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    {[...GENDER_OPTIONS, '自訂'].map(option => (
+                      <button key={option} type="button" onClick={() => { setGenderChoice(option); setProfileError(''); }}
+                        className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${genderChoice === option ? 'bg-emerald-100 text-emerald-700 border border-emerald-300' : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200'}`}
+                      >{option}</button>
+                    ))}
+                    {genderChoice && (
+                      <button type="button" onClick={() => { setGenderChoice(''); setCustomGender(''); }}
+                        className="px-3 py-1.5 rounded-full text-sm font-medium text-slate-500 hover:text-red-500">
+                        清除
+                      </button>
+                    )}
+                  </div>
+                  {genderChoice === '自訂' && (
+                    <input type="text" value={customGender} onChange={e => setCustomGender(e.target.value)} maxLength={50}
+                      placeholder="請輸入您的性別認同"
+                      className="w-full border border-emerald-400 rounded-xl px-4 py-3 text-base text-slate-800 bg-white focus:ring-4 focus:ring-emerald-100 outline-none" />
+                  )}
+                </div>
+              ) : (
+                <p className="text-lg text-slate-700">{displayedGender || '未填寫'}</p>
+              )}
+            </div>
+
+            {/* 慢性病 */}
+            <div className="space-y-3 col-span-1 md:col-span-2 mt-4 pt-4 border-t border-slate-100">
+              <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider">慢性病</label>
+              {isEditing ? (
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    {CHRONIC_OPTIONS.map(condition => (
+                      <button key={condition} type="button" onClick={() => toggleChronic(condition)}
+                        className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${chronicConditions.includes(condition) ? 'bg-emerald-100 text-emerald-700 border border-emerald-300' : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200'}`}
+                      >{condition}</button>
+                    ))}
+                    <button type="button" onClick={toggleCustomChronic}
+                      className={`px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${customChronicEnabled ? 'bg-emerald-100 text-emerald-700 border border-emerald-300' : 'bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200'}`}>
+                      其他／自訂
+                    </button>
+                  </div>
+                  {customChronicEnabled && (
+                    <div className="space-y-1">
+                      <input type="text" value={customChronicText} onChange={e => setCustomChronicText(e.target.value)}
+                        placeholder="請輸入疾病名稱，多項可用頓號或逗號分隔"
+                        className="w-full border border-emerald-400 rounded-xl px-4 py-3 text-base text-slate-800 bg-white focus:ring-4 focus:ring-emerald-100 outline-none" />
+                      <p className="text-xs text-slate-400">例如：帕金森氏症、甲狀腺功能低下</p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-lg text-slate-700">{displayedConditions.length > 0 ? displayedConditions.join('、') : '未填寫'}</p>
+              )}
+            </div>
+
+            {/* 用藥 */}
+            <div className="space-y-3 col-span-1 md:col-span-2 mt-4 pt-4 border-t border-slate-100">
+              <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                <Pill className="w-4 h-4 text-rose-500" /> 目前用藥
+              </label>
+              {isEditing ? (
+                <div className="space-y-3">
+                  {medications.map((med, i) => (
+                    <div key={i} className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <input placeholder="藥名" value={med.name} onChange={e => updateMedication(i, 'name', e.target.value)}
+                          className="border border-slate-300 rounded-lg px-3 py-2 text-base focus:outline-none focus:border-emerald-400" />
+                        <input placeholder="劑量（如 5mg / 1顆）" value={med.dosage} onChange={e => updateMedication(i, 'dosage', e.target.value)}
+                          className="border border-slate-300 rounded-lg px-3 py-2 text-base focus:outline-none focus:border-emerald-400" />
+                        <input placeholder="服用時間（如 早上飯後）" value={med.timing} onChange={e => updateMedication(i, 'timing', e.target.value)}
+                          className="border border-slate-300 rounded-lg px-3 py-2 text-base focus:outline-none focus:border-emerald-400" />
+                      </div>
+                      <button onClick={() => removeMedication(i)} className="text-xs text-red-400 hover:text-red-600 flex items-center gap-1">
+                        <Trash2 className="w-3 h-3" /> 移除此藥物
+                      </button>
+                    </div>
+                  ))}
+                  <button onClick={addMedication} className="text-sm text-emerald-600 hover:text-emerald-700 font-semibold flex items-center gap-1">
+                    <Plus className="w-4 h-4" /> 新增藥物
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {medications.length > 0 ? medications.map((med, i) => (
+                    <p key={i} className="text-lg text-slate-700">{med.name} {med.dosage} — {med.timing}</p>
+                  )) : <p className="text-lg text-slate-400">未填寫</p>}
+                </div>
+              )}
+            </div>
+
+            {/* 過敏 */}
+            <div className="space-y-2 col-span-1 md:col-span-2 mt-4 pt-4 border-t border-slate-100">
+              <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider">過敏</label>
+              {isEditing ? (
+                <input type="text" value={allergies} onChange={e => setAllergies(e.target.value)} placeholder="例如：海鮮、盤尼西林（多項用頓號分隔）"
+                  className="w-full border border-emerald-400 rounded-xl px-4 py-3 text-slate-800 bg-white focus:ring-4 focus:ring-emerald-100 outline-none" />
+              ) : (
+                <p className="text-lg text-slate-700">{allergies || '未填寫'}</p>
+              )}
+            </div>
+
+            {/* 綁定授權碼 */}
+            <div className="space-y-2 col-span-1 md:col-span-2 mt-4 pt-4 border-t border-slate-100">
+              <label className="text-sm font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                <Key className="w-4 h-4 text-amber-500" /> 家人綁定授權碼
+              </label>
+              <div className="flex items-center gap-4">
+                <div className="flex-1 bg-amber-50 border-2 border-amber-200 rounded-xl px-4 py-4 text-center">
+                  <span className="text-3xl font-mono font-bold tracking-widest text-amber-600">{bindingCode}</span>
+                </div>
+                <button onClick={handleRegenerateCode} disabled={savingCode}
+                  className="p-4 bg-white border-2 border-slate-200 hover:border-amber-400 hover:bg-amber-50 hover:text-amber-600 text-slate-500 rounded-xl transition-all shadow-sm disabled:opacity-50"
+                  title="隨機產生新的綁定碼">
+                  <RefreshCw className={`w-6 h-6 ${savingCode ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+              {showCustomCodeInput ? (
+                <div className="flex items-center gap-2 mt-3">
+                  <input type="text" value={customCode} onChange={e => setCustomCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="輸入 6 位數字" className="flex-1 border-2 border-amber-300 rounded-xl px-4 py-2 font-mono text-lg text-center focus:outline-none focus:ring-2 focus:ring-amber-200" maxLength={6} />
+                  <button onClick={handleSetCustomCode} disabled={savingCode} className="px-4 py-2 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600 disabled:opacity-50">確認</button>
+                  <button onClick={() => { setShowCustomCodeInput(false); setCustomCode(''); }} className="px-4 py-2 bg-slate-200 text-slate-600 rounded-xl font-bold hover:bg-slate-300">取消</button>
+                </div>
+              ) : (
+                <button onClick={() => setShowCustomCodeInput(true)} className="text-sm text-amber-600 hover:text-amber-700 font-medium mt-2">想自己設定綁定碼？</button>
+              )}
+              <p className="text-sm text-slate-400 mt-2">請將此授權碼提供給您的家人，讓他們可以在照護者介面綁定您的帳號。</p>
+            </div>
+          </div>
+        </motion.section>
+
+        {/* ===== 追蹤請求核准 ===== */}
+        <PendingFollowRequests />
+
+        {/* ===== 我的追蹤者管理 ===== */}
+        <MyFollowers />
+
+        {/* ===== 記憶足跡時間軸 ===== */}
+        <MemoryTimeline
+          memoryCards={memoryCards}
+          loading={loading}
+          personalNotes={personalNotes}
+          setPersonalNotes={setPersonalNotes}
+          editingNotes={editingNotes}
+          setEditingNotes={setEditingNotes}
+          savingNotes={savingNotes}
+          handleSaveNotes={handleSaveNotes}
+          getIconForType={getIconForType}
+          getBgForType={getBgForType}
+        />
+      </main>
+    </div>
+  );
+};
+
+export default ElderProfilePage;
